@@ -1,0 +1,23 @@
+machine:
+  environment:
+    PATH: ${HOME}/extras/bin:${HOME}/extras/otp/18.3/bin:${PATH}
+
+dependencies:
+  cache_directories:
+    - ~/extras
+    - _build/default/lib
+  pre:
+    - wget https://raw.githubusercontent.com/spawngrid/kerl/master/kerl
+    - chmod a+x kerl
+    - if [ ! -d ~/extras/otp/18.3 ]; then ./kerl build 18.3 18.3; ./kerl install 18.3 ~/extras/otp/18.3; fi
+
+    - ./bootstrap
+
+test:
+  override:
+    - ./rebar3 as circleci ct
+
+  post:
+    - mkdir -p $CIRCLE_TEST_REPORTS/junit/
+    - mv _build/circleci+test/logs/ct_run*/junit_report.xml $CIRCLE_TEST_REPORTS/junit/
+    - mv _build/circleci+test/logs $CIRCLE_ARTIFACTS
