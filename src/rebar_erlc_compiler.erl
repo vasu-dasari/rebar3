@@ -92,6 +92,7 @@ compile(AppInfo) when element(1, AppInfo) == app_info_t ->
 %% @doc compile an individual application.
 -spec compile(rebar_app_info:t(), compile_opts()) -> ok.
 compile(AppInfo, CompileOpts) when element(1, AppInfo) == app_info_t ->
+    warn_deprecated(),
     Dir = rebar_utils:to_list(rebar_app_info:out_dir(AppInfo)),
     RebarOpts = rebar_app_info:opts(AppInfo),
 
@@ -99,6 +100,7 @@ compile(AppInfo, CompileOpts) when element(1, AppInfo) == app_info_t ->
                {recursive, dir_recursive(RebarOpts, "src", CompileOpts)}],
     MibsOpts = [check_last_mod,
                 {recursive, dir_recursive(RebarOpts, "mibs", CompileOpts)}],
+
     rebar_base_compiler:run(RebarOpts,
                             check_files([filename:join(Dir, File)
                                          || File <- rebar_opts:get(RebarOpts, xrl_first_files, [])]),
@@ -147,6 +149,7 @@ compile(RebarOpts, BaseDir, OutDir) ->
 compile(State, BaseDir, OutDir, CompileOpts) when element(1, State) == state_t ->
     compile(rebar_state:opts(State), BaseDir, OutDir, CompileOpts);
 compile(RebarOpts, BaseDir, OutDir, CompileOpts) ->
+    warn_deprecated(),
     SrcDirs = lists:map(fun(SrcDir) -> filename:join(BaseDir, SrcDir) end,
                         rebar_dir:src_dirs(RebarOpts, ["src"])),
     compile_dirs(RebarOpts, BaseDir, SrcDirs, OutDir, CompileOpts),
@@ -285,6 +288,7 @@ gather_src(Opts, BaseDirParts, [Dir|Rest], Srcs, CompileOpts) ->
 %% files, so that yet to be compiled parse transformations are excluded from it.
 erl_first_files(Opts, ErlOpts, Dir, NeededErlFiles) ->
     ErlFirstFilesConf = rebar_opts:get(Opts, erl_first_files, []),
+    valid_erl_first_conf(ErlFirstFilesConf),
     NeededSrcDirs = lists:usort(lists:map(fun filename:dirname/1, NeededErlFiles)),
     %% NOTE: order of files here is important!
     ErlFirstFiles =
@@ -362,6 +366,7 @@ effects_code_generation(Option) ->
         report_errors -> false;
         return_errors-> false;
         return_warnings-> false;
+        report -> false;
         warnings_as_errors -> false;
         binary -> false;
         verbose -> false;
@@ -795,4 +800,42 @@ dir_recursive(Opts, Dir, CompileOpts) when is_list(CompileOpts) ->
     case proplists:get_value(recursive,CompileOpts) of
         undefined -> rebar_dir:recursive(Opts, Dir);
         Recursive -> Recursive
+    end.
+
+valid_erl_first_conf(FileList) ->
+    Strs = filter_file_list(FileList),
+    case rebar_utils:is_list_of_strings(Strs) of
+        true -> true;
+        false -> ?ABORT("An invalid file list (~p) was provided as part of your erl_first_files directive",
+                        [FileList])
+    end.
+
+filter_file_list(FileList) ->
+    Atoms = lists:filter( fun(X) -> is_atom(X) end, FileList),
+    case Atoms of
+        [] ->
+            FileList;
+        _ ->
+          atoms_in_erl_first_files_warning(Atoms),
+          lists:filter( fun(X) -> not(is_atom(X)) end, FileList)
+     end.
+
+atoms_in_erl_first_files_warning(Atoms) ->
+  W = "You have provided atoms as file entries in erl_first_files; "
+      "erl_first_files only expects lists of filenames as strings. "
+      "The following modules (~p) may not work as expected and it is advised "
+      "that you change these entires to string format "
+      "(e.g., \"src/module.erl\") ",
+  ?WARN(W, [Atoms]).
+
+warn_deprecated() ->
+    case get({deprecate_warn, ?MODULE}) of
+        undefined ->
+            ?WARN("Calling deprecated ~p compiler module. This module has been "
+                  "replaced by rebar_compiler and rebar_compiler_erl, but will "
+                  "remain available.", [?MODULE]),
+            put({deprecate_warn, ?MODULE}, true),
+            ok;
+        _ ->
+            ok
     end.

@@ -2,8 +2,6 @@ language: erlang
 matrix:
   include:
     - os: linux
-      otp_release: R16B03-1
-    - os: linux
       otp_release: 17.5
     - os: linux
       otp_release: 18.3
@@ -11,6 +9,8 @@ matrix:
       otp_release: 19.3
     - os: linux
       otp_release: 20.0
+    - os: linux
+      otp_release: 21.0
     - os: osx
       language: generic
 before_script:
@@ -22,6 +22,7 @@ script: "./bootstrap && ./rebar3 ct"
 branches:
   only:
   - master
+  - hex_core
 cache:
   directories:
   - "$HOME/.cache/rebar3/hex/default"
@@ -44,4 +45,4 @@ deploy:
     on:
       repo: erlang/rebar3
       branch: master
-      condition: $TRAVIS_OTP_RELEASE = "R16B03-1"
+      condition: $TRAVIS_OTP_RELEASE = "17.5"

@@ -54,7 +54,7 @@
 %% ====================================================================
 
 %% @doc For running with:
-%% erl +sbtu +A0 -noinput -mode minimal -boot start_clean -s rebar3 main -extra "$@"
+%% erl +sbtu +A1 -noinput -mode minimal -boot start_clean -s rebar3 main -extra "$@"
 -spec main() -> no_return().
 main() ->
     List = init:get_plain_arguments(),
@@ -67,10 +67,10 @@ main(Args) ->
         {ok, _State} ->
             erlang:halt(0);
         Error ->
-            handle_error(Error)
+            handle_error(Error, [])
     catch
-        _:Error ->
-            handle_error(Error)
+        ?WITH_STACKTRACE(_,Error,Stacktrace)
+            handle_error(Error, Stacktrace)
     end.
 
 %% @doc Erlang-API entry point
@@ -93,6 +93,7 @@ run(BaseState, Commands) ->
 %% arguments passed, if they have any relevance; used to translate
 %% from the escript call-site into a common one with the library
 %% usage.
+-spec run([any(), ...]) -> {ok, rebar_state:t()} | {error, term()}.
 run(RawArgs) ->
     start_and_load_apps(command_line),
 
@@ -102,7 +103,7 @@ run(RawArgs) ->
     case erlang:system_info(version) of
         "6.1" ->
             ?WARN("Due to a filelib bug in Erlang 17.1 it is recommended"
-                 "you update to a newer release.", []);
+                  "you update to a newer release.", []);
         _ ->
             ok
     end,
@@ -138,8 +139,17 @@ run_aux(State, RawArgs) ->
                      rebar_state:set(State1, rebar_packages_cdn, CDN)
              end,
 
+    Compilers = application:get_env(rebar, compilers, []),
+    State0 = rebar_state:compilers(State2, Compilers),
+
+    %% TODO: this means use of REBAR_PROFILE=profile will replace the repos with
+    %% the repos defined in the profile. But it will not work with `as profile`.
+    %% Maybe it shouldn't work with either to be consistent?
+    Resources = application:get_env(rebar, resources, []),
+    State2_ = rebar_state:create_resources(Resources, State0),
+
     %% bootstrap test profile
-    State3 = rebar_state:add_to_profile(State2, test, test_state(State1)),
+    State3 = rebar_state:add_to_profile(State2_, test, test_state(State1)),
 
     %% Process each command, resetting any state between each one
     BaseDir = rebar_state:get(State, base_dir, ?DEFAULT_BASE_DIR),
@@ -239,6 +249,7 @@ parse_args([Task | RawRest]) ->
     {list_to_atom(Task), RawRest}.
 
 %% @private actually not too sure what this does anymore.
+-spec set_options(rebar_state:t(),{[any()],[any()]}) -> {rebar_state:t(),[any()]}.
 set_options(State, {Options, NonOptArgs}) ->
     GlobalDefines = proplists:get_all_values(defines, Options),
 
@@ -299,15 +310,15 @@ global_option_spec_list() ->
 
 %% @private translate unhandled errors and internal return codes into proper
 %% erroneous program exits.
--spec handle_error(term()) -> no_return().
-handle_error(rebar_abort) ->
+-spec handle_error(term(), term()) -> no_return().
+handle_error(rebar_abort, _) ->
     erlang:halt(1);
-handle_error({error, rebar_abort}) ->
+handle_error({error, rebar_abort}, _) ->
     erlang:halt(1);
-handle_error({error, {Module, Reason}}) ->
+handle_error({error, {Module, Reason}}, Stacktrace) ->
     case code:which(Module) of
         non_existing ->
-            ?CRASHDUMP("~p: ~p~n~p~n~n", [Module, Reason, erlang:get_stacktrace()]),
+            ?CRASHDUMP("~p: ~p~n~p~n~n", [Module, Reason, Stacktrace]),
             ?ERROR("Uncaught error in rebar_core. Run with DEBUG=1 to stacktrace or consult rebar3.crashdump", []),
             ?DEBUG("Uncaught error: ~p ~p", [Module, Reason]),
             ?INFO("When submitting a bug report, please include the output of `rebar3 report \"your command\"`", []);
@@ -315,13 +326,12 @@ handle_error({error, {Module, Reason}}) ->
             ?ERROR("~ts", [Module:format_error(Reason)])
     end,
     erlang:halt(1);
-handle_error({error, Error}) when is_list(Error) ->
+handle_error({error, Error}, _) when is_list(Error) ->
     ?ERROR("~ts", [Error]),
     erlang:halt(1);
-handle_error(Error) ->
+handle_error(Error, StackTrace) ->
     %% Nothing should percolate up from rebar_core;
     %% Dump this error to console
-    StackTrace = erlang:get_stacktrace(),
     ?CRASHDUMP("Error: ~p~n~p~n~n", [Error, StackTrace]),
     ?ERROR("Uncaught error in rebar_core. Run with DEBUG=1 to see stacktrace or consult rebar3.crashdump", []),
     ?DEBUG("Uncaught error: ~p", [Error]),
@@ -374,7 +384,11 @@ state_from_global_config(Config, GlobalConfigFile) ->
 
     %% We don't want to worry about global plugin install state effecting later
     %% usage. So we throw away the global profile state used for plugin install.
-    GlobalConfigThrowAway = rebar_state:current_profiles(GlobalConfig, [global]),
+    GlobalConfigThrowAway0 = rebar_state:current_profiles(GlobalConfig, [global]),
+
+    Resources = application:get_env(rebar, resources, []),
+    GlobalConfigThrowAway = rebar_state:create_resources(Resources, GlobalConfigThrowAway0),
+
     GlobalState = case rebar_state:get(GlobalConfigThrowAway, plugins, []) of
                       [] ->
                           GlobalConfigThrowAway;
@@ -385,9 +399,11 @@ state_from_global_config(Config, GlobalConfigFile) ->
                   end,
     GlobalPlugins = rebar_state:providers(GlobalState),
     GlobalConfig2 = rebar_state:set(GlobalConfig, plugins, []),
-    GlobalConfig3 = rebar_state:set(GlobalConfig2, {plugins, global}, rebar_state:get(GlobalConfigThrowAway, plugins, [])),
+    GlobalConfig3 = rebar_state:set(GlobalConfig2, {plugins, global},
+                                    rebar_state:get(GlobalConfigThrowAway, plugins, [])),
     rebar_state:providers(rebar_state:new(GlobalConfig3, Config), GlobalPlugins).
 
+-spec test_state(rebar_state:t()) -> [{'extra_src_dirs',[string()]} | {'erl_opts',[any()]}].
 test_state(State) ->
     %% Fetch the test profile's erl_opts only
     Opts = rebar_state:opts(State),
@@ -397,6 +413,7 @@ test_state(State) ->
     TestOpts = safe_define_test_macro(ErlOpts),
     [{extra_src_dirs, ["test"]}, {erl_opts, TestOpts}].
 
+-spec safe_define_test_macro([any()]) -> [any()] | [{'d',atom()} | any()].
 safe_define_test_macro(Opts) ->
     %% defining a compile macro twice results in an exception so
     %% make sure 'TEST' is only defined once
@@ -405,6 +422,7 @@ safe_define_test_macro(Opts) ->
        false -> [{d, 'TEST'}|Opts]
     end.
 
+-spec test_defined([{d, atom()} | {d, atom(), term()} | term()]) -> boolean().
 test_defined([{d, 'TEST'}|_]) -> true;
 test_defined([{d, 'TEST', true}|_]) -> true;
 test_defined([_|Rest]) -> test_defined(Rest);

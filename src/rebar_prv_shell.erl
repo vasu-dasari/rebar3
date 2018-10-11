@@ -40,6 +40,8 @@
 -define(PROVIDER, shell).
 -define(DEPS, [compile]).
 
+-dialyzer({nowarn_function, rewrite_leaders/2}).
+
 %% ===================================================================
 %% Public API
 %% ===================================================================
@@ -76,6 +78,9 @@ init(State) ->
                          "shell. (E.g. --apps app1,app2,app3) Defaults "
                          "to rebar.config {shell, [{apps, Apps}]} or "
                          "relx apps if not specified."},
+                        {start_clean, undefined, "start-clean", boolean,
+                         "Cancel any applications in the 'apps' list "
+                         "or release."},
                         {user_drv_args, undefined, "user_drv_args", string,
                          "Arguments passed to user_drv start function for "
                          "creating custom shells."}]}
@@ -201,20 +206,27 @@ rewrite_leaders(OldUser, NewUser) ->
             lists:member(proplists:get_value(group_leader, erlang:process_info(Pid)),
                          OldMasters)],
     try
-        %% enable error_logger's tty output
-        error_logger:swap_handler(tty),
-        %% disable the simple error_logger (which may have been added multiple
-        %% times). removes at most the error_logger added by init and the
-        %% error_logger added by the tty handler
-        remove_error_handler(3),
-        %% reset the tty handler once more for remote shells
-        error_logger:swap_handler(tty)
+        case erlang:function_exported(logger, module_info, 0) of
+            false ->
+                %% Old style logger had a lock-up issue and other problems related
+                %% to group leader handling.
+                %% enable error_logger's tty output
+                error_logger:swap_handler(tty),
+                %% disable the simple error_logger (which may have been added
+                %% multiple times). removes at most the error_logger added by
+                %% init and the error_logger added by the tty handler
+                remove_error_handler(3),
+                %% reset the tty handler once more for remote shells
+                error_logger:swap_handler(tty);
+            true ->
+                %% This is no longer a problem with the logger interface
+                ok
+        end
     catch
-        E:R -> % may fail with custom loggers
-            ?DEBUG("Logger changes failed for ~p:~p (~p)", [E,R,erlang:get_stacktrace()]),
+        ?WITH_STACKTRACE(E,R,S) % may fail with custom loggers
+            ?DEBUG("Logger changes failed for ~p:~p (~p)", [E,R,S]),
             hope_for_best
     end.
-
 
 setup_paths(State) ->
     %% Add deps to path
@@ -235,9 +247,9 @@ maybe_run_script(State) ->
             File = filename:absname(RelFile),
             try run_script_file(File)
             catch
-                C:E ->
+                ?WITH_STACKTRACE(C,E,S)
                     ?ABORT("Couldn't run shell escript ~p - ~p:~p~nStack: ~p",
-                           [File, C, E, erlang:get_stacktrace()])
+                           [File, C, E, S])
             end
     end.
 
@@ -304,7 +316,12 @@ find_apps_option(State) ->
     {Opts, _} = rebar_state:command_parsed_args(State),
     case debug_get_value(apps, Opts, no_value,
                          "Found shell apps from command line option.") of
-        no_value -> no_value;
+        no_value ->
+            case debug_get_value(start_clean, Opts, false,
+                                "Found start-clean argument to disable apps") of
+                false -> no_value;
+                true -> []
+            end;
         AppsStr ->
             [ list_to_atom(AppStr)
               || AppStr <- rebar_string:lexemes(AppsStr, " ,:") ]
@@ -370,7 +387,7 @@ reread_config(AppsToStart, State) ->
                     lists:member(App, Running),
                     lists:member(App, AppsToStart),
                     not lists:member(App, BlackList)],
-            _ = rebar_utils:reread_config(ConfigList),
+            _ = rebar_utils:reread_config(ConfigList, [update_logger]),
             ok
     end.
 

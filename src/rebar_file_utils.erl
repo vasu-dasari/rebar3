@@ -43,7 +43,8 @@
          path_from_ancestor/2,
          canonical_path/1,
          resolve_link/1,
-         split_dirname/1]).
+         split_dirname/1,
+         ensure_dir/1]).
 
 -include("rebar.hrl").
 
@@ -191,6 +192,10 @@ cp_r(Sources, Dest) ->
         {unix, _} ->
             EscSources = [rebar_utils:escape_chars(Src) || Src <- Sources],
             SourceStr = rebar_string:join(EscSources, " "),
+            % ensure destination exists before copying files into it
+            {ok, []} = rebar_utils:sh(?FMT("mkdir -p ~ts",
+                           [rebar_utils:escape_chars(Dest)]),
+                      [{use_stdout, false}, abort_on_error]),
             {ok, []} = rebar_utils:sh(?FMT("cp -Rp ~ts \"~ts\"",
                                            [SourceStr, rebar_utils:escape_double_quotes(Dest)]),
                                       [{use_stdout, false}, abort_on_error]),
@@ -382,7 +387,7 @@ reset_dir(Path) ->
     %% delete the directory if it exists
     _ = ec_file:remove(Path, [recursive]),
     %% recreate the directory
-    filelib:ensure_dir(filename:join([Path, "dummy.beam"])).
+    ensure_dir(Path).
 
 
 %% Linux touch but using erlang functions to work in bot *nix os and
@@ -435,6 +440,10 @@ resolve_link(Path) ->
 -spec split_dirname(string()) -> {string(), string()}.
 split_dirname(Path) ->
     {filename:dirname(Path), filename:basename(Path)}.
+
+-spec ensure_dir(filelib:dirname_all()) -> ok | {error, file:posix()}.
+ensure_dir(Path) ->
+    filelib:ensure_dir(filename:join(Path, "fake_file")).
 
 %% ===================================================================
 %% Internal functions
@@ -501,7 +510,7 @@ cp_r_win32({true, SourceDir}, {false, DestDir}) ->
         false ->
             %% Specifying a target directory that doesn't currently exist.
             %% So let's attempt to create this directory
-            case filelib:ensure_dir(filename:join(DestDir, "dummy")) of
+            case ensure_dir(DestDir) of
                 ok ->
                     ok = xcopy_win32(SourceDir, DestDir);
                 {error, Reason} ->
