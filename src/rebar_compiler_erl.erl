@@ -3,7 +3,7 @@
 -behaviour(rebar_compiler).
 
 -export([context/1,
-         needed_files/3,
+         needed_files/4,
          dependencies/3,
          compile/4,
          clean/2]).
@@ -31,7 +31,7 @@ context(AppInfo) ->
       out_mappings => Mappings}.
 
 
-needed_files(Graph, FoundFiles, AppInfo) ->
+needed_files(Graph, FoundFiles, _, AppInfo) ->
     OutDir = rebar_app_info:out_dir(AppInfo),
     Dir = rebar_app_info:dir(AppInfo),
     EbinDir = rebar_app_info:ebin_dir(AppInfo),
@@ -317,16 +317,7 @@ expand_file_names(Files, Dirs) ->
                   true ->
                       [Incl];
                   false ->
-                      lists:flatmap(
-                        fun(Dir) ->
-                                FullPath = filename:join(Dir, Incl),
-                                case filelib:is_regular(FullPath) of
-                                    true ->
-                                        [FullPath];
-                                    false ->
-                                        []
-                                end
-                        end, Dirs)
+                      rebar_utils:find_files_in_dirs(Dirs, [$^, Incl, $$], true)
               end
       end, Files).
 

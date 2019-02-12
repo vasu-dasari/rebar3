@@ -10,6 +10,11 @@
          needs_update/2,
          make_vsn/2]).
 
+
+%% For backward compatibilty
+-export([ download/3
+        ]).
+
 -include("rebar.hrl").
 
 -spec init(atom(), rebar_state:t()) -> {ok, rebar_resource_v2:resource()}.
@@ -18,6 +23,7 @@ init(Type, _State) ->
     {ok, Resource}.
 
 lock(AppInfo, _) ->
+    check_type_support(),
     lock_(rebar_app_info:dir(AppInfo), rebar_app_info:source(AppInfo)).
 
 lock_(AppDir, {hg, Url, _}) ->
@@ -61,6 +67,7 @@ needs_update_(Dir, {hg, Url, Ref}) ->
     not ((LocalRef =:= TargetRef) andalso compare_url(Dir, Url)).
 
 download(TmpDir, AppInfo, State, _) ->
+    check_type_support(),
     case download_(TmpDir, rebar_app_info:source(AppInfo), State) of
         {ok, _} ->
             ok;
@@ -69,6 +76,10 @@ download(TmpDir, AppInfo, State, _) ->
         Error ->
             {error, Error}
     end.
+
+%% For backward compatibilty
+download(Dir, AppInfo, State) ->
+    download_(Dir, AppInfo, State).
 
 download_(Dir, {hg, Url}, State) ->
     ?WARN("WARNING: It is recommended to use {branch, Name}, {tag, Tag} or {ref, Ref}, otherwise updating the dep may not work as expected.", []),
@@ -110,6 +121,7 @@ download_(Dir, {hg, Url, Rev}, _State) ->
                    [{cd, filename:dirname(Dir)}]).
 
 make_vsn(AppInfo, _) ->
+    check_type_support(),
     make_vsn_(rebar_app_info:dir(AppInfo)).
 
 make_vsn_(Dir) ->
@@ -183,3 +195,18 @@ parse_hg_url("http://" ++ HostPath) ->
 parse_hg_url("https://" ++ HostPath) ->
     [Host | Path] = rebar_string:lexemes(HostPath, "/"),
     {Host, filename:rootname(filename:join(Path), ".hg")}.
+
+check_type_support() ->
+    case get({is_supported, ?MODULE}) of
+        true ->
+            ok;
+        _ ->
+            case rebar_utils:sh("hg --version", [{return_on_error, true},
+                                                 {use_stdout, false}]) of
+                {error, _} ->
+                    ?ABORT("hg not installed", []);
+                _ ->
+                    put({is_supported, ?MODULE}, true),
+                    ok
+            end
+    end.

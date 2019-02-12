@@ -42,10 +42,11 @@ do(State) ->
     RebarOpts = rebar_state:opts(State),
     SrcDirs = rebar_dir:src_dirs(RebarOpts, ["src"]),
     Plugins = rebar_state:get(State, plugins, []),
+    ProjectPlugins = rebar_state:get(State, project_plugins, []),
     PluginsDirs = filelib:wildcard(filename:join(rebar_dir:plugins_dir(State), "*")),
     CheckoutsDirs = filelib:wildcard(filename:join(rebar_dir:checkouts_dir(State), "*")),
     Apps = rebar_app_discover:find_apps(CheckoutsDirs++PluginsDirs, SrcDirs, all, State),
-    display_plugins("Local plugins", Apps, Plugins),
+    display_plugins("Local plugins", Apps, Plugins ++ ProjectPlugins),
     {ok, State}.
 
 -spec format_error(any()) -> iolist().
@@ -65,8 +66,8 @@ display_plugins(Apps, Plugins) ->
                                     is_tuple(Plugin) -> rebar_utils:to_binary(element(1, Plugin))
                                  end,
                           case rebar_app_utils:find(Name, Apps) of
-                              {ok, _App} ->
-                                  ?CONSOLE("~ts", [Name]);
+                              {ok, App} ->
+                                  ?CONSOLE("~ts (~s)", [Name, rebar_app_info:original_vsn(App)]);
                               error ->
                                   ?DEBUG("Unable to find plugin ~ts", [Name])
                           end

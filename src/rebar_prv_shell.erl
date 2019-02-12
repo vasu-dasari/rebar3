@@ -78,6 +78,12 @@ init(State) ->
                          "shell. (E.g. --apps app1,app2,app3) Defaults "
                          "to rebar.config {shell, [{apps, Apps}]} or "
                          "relx apps if not specified."},
+                        {relname, $r, "relname", atom,
+                         "Name of the release to use as a template for the "
+                         "shell session"},
+                        {relvsn, $v, "relvsn", string,
+                         "Version of the release to use for the shell "
+                         "session"},
                         {start_clean, undefined, "start-clean", boolean,
                          "Cancel any applications in the 'apps' list "
                          "or release."},
@@ -128,6 +134,7 @@ info() ->
     "Start a shell with project and deps preloaded similar to~n'erl -pa ebin -pa deps/*/ebin'.~n".
 
 setup_shell(ShellArgs) ->
+    LoggerState = maybe_remove_logger(),
     OldUser = kill_old_user(),
     %% Test for support here
     NewUser = try erlang:open_port({spawn,"tty_sl -c -e"}, []) of
@@ -138,7 +145,28 @@ setup_shell(ShellArgs) ->
         error:_ ->
             setup_old_shell()
     end,
-    rewrite_leaders(OldUser, NewUser).
+    rewrite_leaders(OldUser, NewUser),
+    maybe_reset_logger(LoggerState).
+
+%% @private starting with OTP-21.2.3, there's an oddity where the logger
+%% likely tries to handle system logs while we take down the TTY, which
+%% ends up hanging the default logger. This function (along with
+%% `maybe_reset_logger/1') removes and re-adds the default logger before and
+%% after the TTY subsystem is taken offline, which prevents such hanging.
+maybe_remove_logger() ->
+    case erlang:function_exported(logger, module_info, 0) of
+        false ->
+            ignore;
+        true ->
+            {ok, Cfg} = logger:get_handler_config(default),
+            logger:remove_handler(default),
+            {restart, Cfg}
+    end.
+
+maybe_reset_logger(ignore) ->
+    ok;
+maybe_reset_logger({restart, #{module := Mod, config := Cfg}}) ->
+    logger:add_handler(default, Mod, Cfg).
 
 kill_old_user() ->
     OldUser = whereis(user),
@@ -335,15 +363,30 @@ find_apps_rebar(State) ->
 
 -spec find_apps_relx(rebar_state:t()) -> no_value | list().
 find_apps_relx(State) ->
-    case lists:keyfind(release, 1, rebar_state:get(State, relx, [])) of
-        {_, _, Apps} ->
+    {Opts, _} = rebar_state:command_parsed_args(State),
+    RelxOpts = rebar_state:get(State, relx, []),
+    {Defname, Defvsn} = debug_get_value(default_release, RelxOpts,
+                                        {undefined, undefined},
+                                        "Found default release from config"),
+    Relname = debug_get_value(relname, Opts, Defname,
+                              "Found relname from command line option"),
+    Relvsn = debug_get_value(relvsn, Opts, Defvsn,
+                             "Found relvsn from command line option"),
+    Releases = [Rel || Rel <- rebar_state:get(State, relx, []),
+                       is_tuple(Rel), element(1, Rel) =:= release,
+                       tuple_size(Rel) =:= 3 orelse tuple_size(Rel) =:= 4,
+                       {Name, Vsn} <- [element(2, Rel)],
+                       Relname == undefined orelse Name == Relname,
+                       Relvsn == undefined orelse Vsn == Relvsn],
+    case Releases of
+        [] ->
+            no_value;
+        [{_, _, Apps}|_] ->
             ?DEBUG("Found shell apps from relx.", []),
             Apps;
-        {_, _, Apps, _} ->
+        [{_, _, Apps, _}|_] ->
             ?DEBUG("Found shell apps from relx.", []),
-            Apps;
-        false ->
-            no_value
+            Apps
     end.
 
 load_apps(Apps) ->

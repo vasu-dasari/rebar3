@@ -99,7 +99,7 @@ init_per_testcase(bad_disconnect=Name, Config0) ->
     Config = mock_config(Name, Config1),
     meck:expect(hex_repo, get_tarball, fun(_, _, _) ->
                                                {error, econnrefused}
-                                       end),                
+                                       end),
     Config;
 init_per_testcase(Name, Config0) ->
     Config = [{good_cache, false},
@@ -225,19 +225,24 @@ pkgs_provider(Config) ->
 find_highest_matching(_Config) ->
     State = rebar_state:new(),
     {ok, Vsn} = rebar_packages:find_highest_matching_(
-                  <<"goodpkg">>, <<"1.0.0">>, #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
+                  <<"goodpkg">>, ec_semver:parse(<<"1.0.0">>), #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
     ?assertEqual({{1,0,1},{[],[]}}, Vsn),
     {ok, Vsn1} = rebar_packages:find_highest_matching(
-                   <<"goodpkg">>, <<"1.0">>, #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
+                   <<"goodpkg">>, ec_semver:parse(<<"1.0">>), #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
     ?assertEqual({{1,1,1},{[],[]}}, Vsn1),
     {ok, Vsn2} = rebar_packages:find_highest_matching(
-                   <<"goodpkg">>, <<"2.0">>, #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
+                   <<"goodpkg">>, ec_semver:parse(<<"2.0">>), #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
     ?assertEqual({{2,0,0},{[],[]}}, Vsn2),
 
     %% regression test. ~> constraints higher than the available packages would result
     %% in returning the first package version instead of 'none'.
-    ?assertEqual(none, rebar_packages:find_highest_matching_(<<"goodpkg">>, <<"~> 5.0">>,
-                                                             #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State)).
+    ?assertEqual(none, rebar_packages:find_highest_matching_(<<"goodpkg">>, ec_semver:parse(<<"5.0">>),
+                                                             #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State)),
+
+
+    {ok, Vsn3} = rebar_packages:find_highest_matching_(<<"goodpkg">>, ec_semver:parse(<<"3.0.0-rc.0">>),
+                                                       #{name => <<"hexpm">>}, ?PACKAGE_TABLE, State),
+    ?assertEqual({{3,0,0},{[<<"rc">>,0],[]}}, Vsn3).
 
 %%%%%%%%%%%%%%%
 %%% Helpers %%%
@@ -247,12 +252,13 @@ mock_config(Name, Config) ->
     CacheRoot = filename:join([Priv, "cache", atom_to_list(Name)]),
     TmpDir = filename:join([Priv, "tmp", atom_to_list(Name)]),
     Tid = ets:new(registry_table, [public]),
-    AllDeps = [        
+    AllDeps = [
         {{<<"badindexchk">>,<<"1.0.0">>}, [[], ?bad_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.0.0">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.0.1">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.1.1">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"2.0.0">>}, [[], ?good_checksum, [<<"rebar3">>]]},
+        {{<<"goodpkg">>,<<"3.0.0-rc.0">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"badpkg">>,<<"1.0.0">>}, [[], ?badpkg_checksum, [<<"rebar3">>]]}
     ],
     ets:insert_new(Tid, AllDeps),
@@ -261,7 +267,7 @@ mock_config(Name, Config) ->
     ok = ets:tab2file(Tid, filename:join([CacheDir, "registry"])),
 
     catch ets:delete(?PACKAGE_TABLE),
-    rebar_packages:new_package_table(),    
+    rebar_packages:new_package_table(),
     lists:foreach(fun({{N, Vsn}, [Deps, Checksum, _]}) ->
                           case ets:member(?PACKAGE_TABLE, {ec_cnv:to_binary(N), Vsn, <<"hexpm">>}) of
                               false ->
@@ -273,18 +279,18 @@ mock_config(Name, Config) ->
                                   ok
                           end
                   end, AllDeps),
-    
+
 
     meck:new(hex_repo, [passthrough]),
-    meck:expect(hex_repo, get_package, 
+    meck:expect(hex_repo, get_package,
                 fun(_Config, PkgName) ->
                         Matches = ets:match_object(Tid, {{PkgName,'_'}, '_'}),
-                        Releases = 
+                        Releases =
                             [#{checksum => Checksum,
                                version => Vsn,
-                               dependencies => Deps} || 
+                               dependencies => Deps} ||
                                 {{_, Vsn}, [Deps, Checksum, _]} <- Matches],
-                        {ok, {200, #{}, #{releases => Releases}}}
+                        {ok, {200, #{}, Releases}}
                 end),
 
     %% The state returns us a fake registry
@@ -315,7 +321,7 @@ mock_config(Name, Config) ->
     %% Cache fetches are mocked -- we assume the server and clients are
     %% correctly used.
     GoodCache = ?config(good_cache, Config),
-    {Pkg,Vsn} = ?config(pkg, Config), 
+    {Pkg,Vsn} = ?config(pkg, Config),
     PkgFile = <<Pkg/binary, "-", Vsn/binary, ".tar">>,
     {ok, PkgContents} = file:read_file(filename:join(?config(data_dir, Config), PkgFile)),
 
@@ -323,8 +329,8 @@ mock_config(Name, Config) ->
                                                {ok, {304, #{<<"etag">> => ?good_etag}, <<>>}};
                                           (_, _, _) ->
                                                {ok, {200, #{<<"etag">> => ?good_etag}, PkgContents}}
-                                       end),   
- 
+                                       end),
+
     [{cache_root, CacheRoot},
      {cache_dir, CacheDir},
      {tmp_dir, TmpDir},

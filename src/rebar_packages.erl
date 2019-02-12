@@ -49,17 +49,19 @@ get(Config, Name) ->
 
 
 -spec get_all_names(rebar_state:t()) -> [binary()].
-get_all_names(State) ->    
+get_all_names(State) ->
     verify_table(State),
     lists:usort(ets:select(?PACKAGE_TABLE, [{#package{key={'$1', '_', '_'},
-                                                      _='_'}, 
+                                                      _='_'},
                                              [], ['$1']}])).
 
--spec get_package_versions(unicode:unicode_binary(), unicode:unicode_binary(),
+-spec get_package_versions(unicode:unicode_binary(), ec_semver:semver(),
+                           unicode:unicode_binary(),
                            ets:tid(), rebar_state:t()) -> [vsn()].
-get_package_versions(Dep, Repo, Table, State) ->
+get_package_versions(Dep, {_, AlphaInfo}, Repo, Table, State) ->
     ?MODULE:verify_table(State),
-    AllowPreRelease = rebar_state:get(State, deps_allow_prerelease, false),
+    AllowPreRelease = rebar_state:get(State, deps_allow_prerelease, false)
+        orelse AlphaInfo =/= {[],[]},
     ets:select(Table, [{#package{key={Dep, {'$1', '$2'}, Repo},
                                  _='_'},
                         [{'==', '$2', {{[],[]}}} || not AllowPreRelease], [{{'$1', '$2'}}]}]).
@@ -82,7 +84,7 @@ get_package(Dep, Vsn, Hash, Repos, Table, State) ->
             not_found
     end.
 
-new_package_table() ->    
+new_package_table() ->
     ?PACKAGE_TABLE = ets:new(?PACKAGE_TABLE, [named_table, public, ordered_set, {keypos, 2}]),
     ets:insert(?PACKAGE_TABLE, {?PACKAGE_INDEX_VERSION, package_index_version}).
 
@@ -99,14 +101,14 @@ load_and_verify_version(State) ->
                     ?DEBUG("Package index version mismatch. Current version ~p, this rebar3 expecting ~p",
                            [V, ?PACKAGE_INDEX_VERSION]),
                     (catch ets:delete(?PACKAGE_TABLE)),
-                    new_package_table()                    
+                    new_package_table()
             end;
-        _ ->            
+        _ ->
             new_package_table()
     end.
 
 handle_missing_package(PkgKey, Repo, State, Fun) ->
-    Name = 
+    Name =
         case PkgKey of
             {N, Vsn, _Repo} ->
                 ?DEBUG("Package ~ts-~ts not found. Fetching registry updates for "
@@ -119,8 +121,8 @@ handle_missing_package(PkgKey, Repo, State, Fun) ->
         end,
 
     update_package(Name, Repo, State),
-    try 
-        Fun(State) 
+    try
+        Fun(State)
     catch
         _:_ ->
             %% Even after an update the package is still missing, time to error out
@@ -180,7 +182,7 @@ find_highest_matching(Dep, Constraint, Repo, Table, State) ->
     end.
 
 find_highest_matching_(Dep, Constraint, #{name := Repo}, Table, State) ->
-    try get_package_versions(Dep, Repo, Table, State) of
+    try get_package_versions(Dep, Constraint, Repo, Table, State) of
         [Vsn] ->
             handle_single_vsn(Vsn, Constraint);
         Vsns ->
@@ -218,7 +220,7 @@ verify_table(State) ->
     ets:info(?PACKAGE_TABLE, named_table) =:= true orelse load_and_verify_version(State).
 
 parse_deps(Deps) ->
-    [{maps:get(app, D, Name), {pkg, Name, Constraint, undefined}} 
+    [{maps:get(app, D, Name), {pkg, Name, Constraint, undefined}}
      || D=#{package := Name,
             requirement := Constraint} <- Deps].
 
@@ -231,16 +233,15 @@ parse_checksum(Checksum) ->
 
 update_package(Name, RepoConfig=#{name := Repo}, State) ->
     ?MODULE:verify_table(State),
-    try hex_repo:get_package(RepoConfig#{repo_key => maps:get(read_key, RepoConfig, <<>>)}, Name) of
-        {ok, {200, _Headers, #{releases := Releases}}} ->
+    try hex_repo:get_package(get_package_repo_config(RepoConfig), Name) of
+        {ok, {200, _Headers, Releases}} ->
             _ = insert_releases(Name, Releases, Repo, ?PACKAGE_TABLE),
             {ok, RegistryDir} = rebar_packages:registry_dir(State),
             PackageIndex = filename:join(RegistryDir, ?INDEX_FILE),
             ok = ets:tab2file(?PACKAGE_TABLE, PackageIndex);
-        {ok, {403, _Headers, <<>>}} ->
-            not_found;
-        {ok, {404, _Headers, _}} ->
-            not_found;
+        {error, unverified} ->
+            ?WARN(unverified_repo_message(), [Repo]),
+            fail;
         Error ->
             ?DEBUG("Hex get_package request failed: ~p", [Error]),
             %% TODO: add better log message. hex_core should export a format_error
@@ -251,6 +252,18 @@ update_package(Name, RepoConfig=#{name := Repo}, State) ->
             ?DEBUG("hex_repo:get_package failed for package ~p: ~p", [Name, Exception]),
             fail
     end.
+
+get_package_repo_config(RepoConfig=#{mirror_of := Repo}) ->
+    get_package_repo_config(maps:remove(mirror_of, RepoConfig#{name => Repo}));
+get_package_repo_config(RepoConfig=#{read_key := Key}) ->
+    get_package_repo_config(maps:remove(read_key, RepoConfig#{repo_key => Key}));
+get_package_repo_config(RepoConfig) ->
+    RepoConfig.
+
+unverified_repo_message() ->
+    "The registry repository ~ts uses a record format that has been deprecated for "
+    "security reasons. The repository should be updated in order to be safer. "
+    "You can disable this check by setting REBAR_NO_VERIFY_REPO_ORIGIN=1".
 
 insert_releases(Name, Releases, Repo, Table) ->
     [true = ets:insert(Table,
@@ -292,7 +305,7 @@ resolve_version(Dep, DepVsn, Hash, HexRegistry, State) when is_binary(Hash) ->
     end;
 resolve_version(Dep, undefined, Hash, HexRegistry, State) ->
     Fun = fun(Repo) ->
-              case highest_matching(Dep, "0", Repo, HexRegistry, State) of
+              case highest_matching(Dep, {0,{[],[]}}, Repo, HexRegistry, State) of
                   none ->
                       not_found;
                   {ok, Vsn} ->
@@ -360,9 +373,9 @@ resolve_version_(Dep, DepVsn, Repo, HexRegistry, State) ->
     end.
 
 rm_ws(<<" ", R/binary>>) ->
-    rm_ws(R);
+    ec_semver:parse(rm_ws(R));
 rm_ws(R) ->
-    R.
+    ec_semver:parse(R).
 
 valid_vsn(Vsn) ->
     %% Regepx from https://github.com/sindresorhus/semver-regex/blob/master/index.js
@@ -375,7 +388,7 @@ highest_matching(Dep, Vsn, Repo, HexRegistry, State) ->
     find_highest_matching_(Dep, Vsn, #{name => Repo}, HexRegistry, State).
 
 cmp(Dep, Vsn, Repo, HexRegistry, State, CmpFun) ->
-    case get_package_versions(Dep, Repo, HexRegistry, State) of
+    case get_package_versions(Dep, Vsn, Repo, HexRegistry, State) of
         [] ->
             none;
         Vsns ->
@@ -398,7 +411,7 @@ cmp_(BestMatch, MinVsn, [Vsn | R], CmpFun) ->
 %% We need to treat this differently since we want a version that is LOWER but
 %% the higest possible one.
 cmpl(Dep, Vsn, Repo, HexRegistry, State, CmpFun) ->
-    case get_package_versions(Dep, Repo, HexRegistry, State) of
+    case get_package_versions(Dep, Vsn, Repo, HexRegistry, State) of
         [] ->
             none;
         Vsns ->

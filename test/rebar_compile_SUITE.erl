@@ -16,6 +16,7 @@ all() ->
      {group, basic_extras}, {group, release_extras}, {group, unbalanced_extras},
      {group, root_extras},
      recompile_when_hrl_changes, recompile_when_included_hrl_changes,
+     recompile_extra_when_hrl_in_src_changes,
      recompile_when_opts_included_hrl_changes,
      recompile_when_opts_change,
      dont_recompile_when_opts_dont_change, dont_recompile_yrl_or_xrl,
@@ -710,6 +711,49 @@ recompile_when_included_hrl_changes(Config) ->
 
     ?assert(ModTime =/= NewModTime).
 
+recompile_extra_when_hrl_in_src_changes(Config) ->
+    AppDir = ?config(apps, Config),
+
+    Name = rebar_test_utils:create_random_name("app1_"),
+    Vsn = rebar_test_utils:create_random_vsn(),
+    rebar_test_utils:create_app(AppDir, Name, Vsn, [kernel, stdlib]),
+
+    ExtraSrc = <<"-module(test_header_include).\n"
+                  "-export([main/0]).\n"
+                  "-include(\"test_header_include.hrl\").\n"
+                  "main() -> ?SOME_DEFINE.\n">>,
+
+    ExtraHeader = <<"-define(SOME_DEFINE, true).\n">>,
+    HeaderFile = filename:join([AppDir, "src", "test_header_include.hrl"]),
+    SrcFile = filename:join([AppDir, "extra", "test_header_include.erl"]),
+    filelib:ensure_dir(SrcFile),
+    ok = file:write_file(SrcFile, ExtraSrc),
+    ok = file:write_file(HeaderFile, ExtraHeader),
+
+    RebarCfg = [{extra_src_dirs, ["extra"]}],
+    rebar_test_utils:run_and_check(Config, RebarCfg, ["compile"],
+                                   {ok, [{app, Name}]}),
+
+    EbinDir = filename:join([AppDir, "_build", "default", "lib", Name, "extra"]),
+    {ok, Files} = rebar_utils:list_dir(EbinDir),
+    ModTime = [filelib:last_modified(filename:join([EbinDir, F]))
+               || F <- Files, filename:extension(F) == ".beam"],
+
+    timer:sleep(1000),
+
+    NewExtraHeader = <<"-define(SOME_DEFINE, false).\n">>,
+    ok = file:write_file(HeaderFile, NewExtraHeader, [sync]),
+
+    rebar_test_utils:run_and_check(Config, RebarCfg, ["compile"],
+                                   {ok, [{app, Name}]}),
+
+    {ok, NewFiles} = rebar_utils:list_dir(EbinDir),
+
+    NewModTime = [filelib:last_modified(filename:join([EbinDir, F]))
+                  || F <- NewFiles, filename:extension(F) == ".beam"],
+
+    ?assert(ModTime =/= NewModTime).
+
 recompile_when_opts_included_hrl_changes(Config) ->
     AppsDir = ?config(apps, Config),
 
@@ -845,20 +889,39 @@ dont_recompile_yrl_or_xrl(Config) ->
                "F -> number : '$1'.\n"],
     ok = ec_file:write(Yrl, YrlBody),
 
-    XrlBeam = filename:join([AppDir, "ebin", filename:basename(Xrl, ".xrl") ++ ".beam"]),
-    YrlBeam = filename:join([AppDir, "ebin", filename:basename(Yrl, ".yrl") ++ ".beam"]),
+    XrlErl = filename:join([AppDir, "src", filename:basename(Xrl, ".xrl") ++ ".erl"]),
+    YrlErl = filename:join([AppDir, "src", filename:basename(Yrl, ".yrl") ++ ".erl"]),
 
-    rebar_test_utils:run_and_check(Config, [], ["compile"], {ok, [{app, Name}]}),
+    EbinDir = filename:join([AppDir, "_build", "default", "lib", Name, "ebin"]),
+    XrlBeam = filename:join([EbinDir, filename:basename(Xrl, ".xrl") ++ ".beam"]),
+    YrlBeam = filename:join([EbinDir, filename:basename(Yrl, ".yrl") ++ ".beam"]),
 
-    XrlModTime = filelib:last_modified(XrlBeam),
-    YrlModTime = filelib:last_modified(YrlBeam),
+    Hrl = filename:join([AppDir, "include", "some_header.hrl"]),
+    ok = filelib:ensure_dir(Hrl),
+    HrlBody = yeccpre_hrl(),
+    ok = ec_file:write(Hrl, HrlBody),
+    RebarConfig = [{yrl_opts, [{includefile, "include/some_header.hrl"}]}],
+
+    rebar_test_utils:run_and_check(Config, RebarConfig, ["compile"], {ok, [{app, Name}]}),
+
+    XrlModTime = filelib:last_modified(XrlErl),
+    YrlModTime = filelib:last_modified(YrlErl),
+
+    XrlBeamModTime = filelib:last_modified(XrlBeam),
+    YrlBeamModTime = filelib:last_modified(YrlBeam),
 
     timer:sleep(1000),
 
-    rebar_test_utils:run_and_check(Config, [], ["compile"], {ok, [{app, Name}]}),
+    rebar_test_utils:run_and_check(Config, RebarConfig, ["compile"], {ok, [{app, Name}]}),
 
-    NewXrlModTime = filelib:last_modified(XrlBeam),
-    NewYrlModTime = filelib:last_modified(YrlBeam),
+    NewXrlModTime = filelib:last_modified(XrlErl),
+    NewYrlModTime = filelib:last_modified(YrlErl),
+
+    NewXrlBeamModTime = filelib:last_modified(XrlBeam),
+    NewYrlBeamModTime = filelib:last_modified(YrlBeam),
+
+    ?assert(XrlBeamModTime == NewXrlBeamModTime),
+    ?assert(YrlBeamModTime == NewYrlBeamModTime),
 
     ?assert(XrlModTime == NewXrlModTime),
     ?assert(YrlModTime == NewYrlModTime).
@@ -1142,17 +1205,19 @@ umbrella_mib_first_test(Config) ->
 
     rebar_test_utils:create_app(AppDir, Name, Vsn, [kernel, stdlib]),
 
-    MibsSrc = <<"-- SIMPLE-MIB.\n"
+    BExporterSrc = <<"-- BEXPORTER-MIB.\n"
 "-- This is just a simple MIB used for testing!\n"
 "--\n"
-"SIMPLE-MIB DEFINITIONS ::= BEGIN\n"
+"BEXPORTER-MIB DEFINITIONS ::= BEGIN\n"
 "IMPORTS\n"
+"    TEXTUAL-CONVENTION\n"
+"        FROM SNMPv2-TC\n"
 "    MODULE-IDENTITY, enterprises\n"
 "        FROM SNMPv2-SMI;\n"
 "\n"
 "ericsson MODULE-IDENTITY\n"
 "    LAST-UPDATED\n"
-"        \"201403060000Z\"\n"
+"        \"201812050000Z\"\n"
 "    ORGANIZATION\n"
 "        \"rebar\"\n"
 "    CONTACT-INFO\n"
@@ -1164,24 +1229,70 @@ umbrella_mib_first_test(Config) ->
 "        \"This very small module is made available\n"
 "	for mib-compilation testing.\"\n"
 "    ::= { enterprises 999 }\n"
+"\n"
+"Something ::= TEXTUAL-CONVENTION\n"
+"    STATUS current\n"
+"    DESCRIPTION \"\"\n"
+"    SYNTAX      OCTET STRING (SIZE (4))\n"
 "END\n">>,
 
+    AImporterSrc = <<"-- AIMPORTER-MIB.\n"
+"-- This is just a simple MIB used for testing!\n"
+"--\n"
+"AIMPORTER-MIB DEFINITIONS ::= BEGIN\n"
+"IMPORTS\n"
+"    Something\n"
+"        FROM BEXPORTER-MIB\n"
+"    MODULE-IDENTITY, enterprises\n"
+"        FROM SNMPv2-SMI;\n"
+"\n"
+"ericsson MODULE-IDENTITY\n"
+"    LAST-UPDATED\n"
+"        \"201812050000Z\"\n"
+"    ORGANIZATION\n"
+"        \"rebar\"\n"
+"    CONTACT-INFO\n"
+"        \"rebar <rebar@example.com>\n"
+"    or\n"
+"    whoever is currently responsible for the SIMPLE\n"
+"    enterprise MIB tree branch (enterprises.999).\"\n"
+"    DESCRIPTION\n"
+"        \"This very small module is made available\n"
+"	for mib-compilation testing.\"\n"
+"    ::= { enterprises 1000 }\n"
+"END\n">>,
+
+
+
     ok = filelib:ensure_dir(filename:join([AppDir, "mibs", "dummy"])),
-    ok = file:write_file(filename:join([AppDir, "mibs", "SIMPLE-MIB.mib"]), MibsSrc),
+    ok = file:write_file(filename:join([AppDir, "mibs", "AIMPORTER-MIB.mib"]), AImporterSrc),
+    ok = file:write_file(filename:join([AppDir, "mibs", "BEXPORTER-MIB.mib"]), BExporterSrc),
 
-    RebarConfig = [{mib_first_files, ["mibs/SIMPLE-MIB.mib"]}],
+        FailureRebarConfig = [{mib_first_files, ["mibs/AIMPORTER-MIB.mib"]}],
+    SuccessRebarConfig = [{mib_first_files, ["mibs/BEXPORTER-MIB.mib"]}],
 
-    rebar_test_utils:run_and_check(Config, RebarConfig, ["compile"], {ok, [{app, Name}]}),
+    PrivMibsDir = filename:join([AppsDir, "_build", "default", "lib", Name, "priv", "mibs"]),
+
+    FailureRebarConfig = [{mib_first_files, ["mibs/AIMPORTER-MIB.mib"]}],
+    catch (
+    rebar_test_utils:run_and_check(Config, FailureRebarConfig, ["compile"], {ok, [{app, Name}]}) ),
+
+    %% check that the bin file was NOT cretated
+    false = filelib:is_file(filename:join([PrivMibsDir, "AIMPORTER-MIB.bin"])),
+
+
+    SuccessRebarConfig = [{mib_first_files, ["mibs/BEXPORTER-MIB.mib"]}],
+    rebar_test_utils:run_and_check(Config, SuccessRebarConfig, ["compile"], {ok, [{app, Name}]}),
 
     %% check a bin corresponding to the mib in the mibs dir exists in priv/mibs
-    PrivMibsDir = filename:join([AppsDir, "_build", "default", "lib", Name, "priv", "mibs"]),
-    true = filelib:is_file(filename:join([PrivMibsDir, "SIMPLE-MIB.bin"])),
+    true = filelib:is_file(filename:join([PrivMibsDir, "AIMPORTER-MIB.bin"])),
 
     %% check a hrl corresponding to the mib in the mibs dir exists in include
-    true = filelib:is_file(filename:join([AppDir, "include", "SIMPLE-MIB.hrl"])),
+    true = filelib:is_file(filename:join([AppDir, "include", "AIMPORTER-MIB.hrl"])),
 
     %% check the mibs dir was linked into the _build dir
     true = filelib:is_dir(filename:join([AppsDir, "_build", "default", "lib", Name, "mibs"])).
+
 
 only_default_transitive_deps(Config) ->
     AppDir = ?config(apps, Config),
@@ -1856,7 +1967,7 @@ include_file_in_src_test_multiapp(Config) ->
     AppDir1 = filename:join([?config(apps, Config), "lib", Name1]),
     AppDir2 = filename:join([?config(apps, Config), "lib", Name2]),
     Vsn = rebar_test_utils:create_random_vsn(),
-    rebar_test_utils:create_app(AppDir1, Name1, Vsn, [kernel, stdlib]),
+    rebar_test_utils:create_app(AppDir1, Name1, Vsn, [kernel, stdlib, list_to_atom(Name2)]),
     rebar_test_utils:create_app(AppDir2, Name2, Vsn, [kernel, stdlib]),
 
     Src = "-module(test).\n"
@@ -1878,7 +1989,8 @@ include_file_in_src_test_multiapp(Config) ->
     RebarConfig = [],
     rebar_test_utils:run_and_check(Config, RebarConfig,
                                    ["as", "test", "compile"],
-                                   {ok, [{app, Name1}]}).
+                                   {ok, [{app, Name1}]}),
+    ok.
 
 %% this test sets the env var, compiles, records the file last modified timestamp,
 %% recompiles and compares the file last modified timestamp to ensure it hasn't
@@ -2137,7 +2249,13 @@ recursive(Config) ->
 
     EbinDir = filename:join([AppDir, "_build", "default", "lib", Name, "ebin"]),
     {ok, Files} = rebar_utils:list_dir(EbinDir),
-    ?assert(lists:member("rec.beam",Files)).
+    ?assert(lists:member("rec.beam",Files)),
+
+    %% check that rec is in modules list of .app file
+    AppFile = filename:join(EbinDir, Name++".app"),
+    {ok, [{application, _, List}]} = file:consult(AppFile),
+    {modules, Modules} = lists:keyfind(modules, 1, List),
+    ?assert(lists:member(rec, Modules)).
 
 no_recursive(Config) ->
     AppDir = ?config(apps, Config),
@@ -2194,3 +2312,143 @@ regex_filter_regression(Config) ->
                                    {ok, [{file, Expected}]}),
     ok.
 
+%%
+
+%% a copy of lib/parsetools/include/yeccpre.hrl so we can test yrl includefile
+yeccpre_hrl() ->
+    <<"-type yecc_ret() :: {'error', _} | {'ok', _}.
+
+-spec parse(Tokens :: list()) -> yecc_ret().
+parse(Tokens) ->
+    yeccpars0(Tokens, {no_func, no_line}, 0, [], []).
+
+-spec parse_and_scan({function() | {atom(), atom()}, [_]}
+                     | {atom(), atom(), [_]}) -> yecc_ret().
+parse_and_scan({F, A}) ->
+    yeccpars0([], {{F, A}, no_line}, 0, [], []);
+parse_and_scan({M, F, A}) ->
+    Arity = length(A),
+    yeccpars0([], {{fun M:F/Arity, A}, no_line}, 0, [], []).
+
+-spec format_error(any()) -> [char() | list()].
+format_error(Message) ->
+    case io_lib:deep_char_list(Message) of
+        true ->
+            Message;
+        _ ->
+            io_lib:write(Message)
+    end.
+
+%% To be used in grammar files to throw an error message to the parser
+%% toplevel. Doesn't have to be exported!
+-compile({nowarn_unused_function, return_error/2}).
+-spec return_error(integer(), any()) -> no_return().
+return_error(Line, Message) ->
+    throw({error, {Line, ?MODULE, Message}}).
+
+-define(CODE_VERSION, \"1.4\").
+
+yeccpars0(Tokens, Tzr, State, States, Vstack) ->
+    try yeccpars1(Tokens, Tzr, State, States, Vstack)
+    catch
+        error:Error ->
+            try yecc_error_type(Error, []) of
+                Desc ->
+                    erlang:raise(error, {yecc_bug, ?CODE_VERSION, Desc},
+                                 [])
+            catch _:_ -> erlang:raise(error, Error, [])
+            end;
+        %% Probably thrown from return_error/2:
+        throw: {error, {_Line, ?MODULE, _M}} = Error ->
+            Error
+    end.
+
+yecc_error_type(function_clause, _) ->
+    not_implemented.
+
+yeccpars1([Token | Tokens], Tzr, State, States, Vstack) ->
+    yeccpars2(State, element(1, Token), States, Vstack, Token, Tokens, Tzr);
+yeccpars1([], {{F, A},_Line}, State, States, Vstack) ->
+    case apply(F, A) of
+        {ok, Tokens, Endline} ->
+            yeccpars1(Tokens, {{F, A}, Endline}, State, States, Vstack);
+        {eof, Endline} ->
+            yeccpars1([], {no_func, Endline}, State, States, Vstack);
+        {error, Descriptor, _Endline} ->
+            {error, Descriptor}
+    end;
+yeccpars1([], {no_func, no_line}, State, States, Vstack) ->
+    Line = 999999,
+    yeccpars2(State, '$end', States, Vstack, yecc_end(Line), [],
+              {no_func, Line});
+yeccpars1([], {no_func, Endline}, State, States, Vstack) ->
+    yeccpars2(State, '$end', States, Vstack, yecc_end(Endline), [],
+              {no_func, Endline}).
+
+%% yeccpars1/7 is called from generated code.
+%%
+%% When using the {includefile, Includefile} option, make sure that
+%% yeccpars1/7 can be found by parsing the file without following
+%% include directives. yecc will otherwise assume that an old
+%% yeccpre.hrl is included (one which defines yeccpars1/5).
+yeccpars1(State1, State, States, Vstack, Token0, [Token | Tokens], Tzr) ->
+    yeccpars2(State, element(1, Token), [State1 | States],
+              [Token0 | Vstack], Token, Tokens, Tzr);
+yeccpars1(State1, State, States, Vstack, Token0, [], {{_F,_A}, _Line}=Tzr) ->
+    yeccpars1([], Tzr, State, [State1 | States], [Token0 | Vstack]);
+yeccpars1(State1, State, States, Vstack, Token0, [], {no_func, no_line}) ->
+    Line = yecctoken_end_location(Token0),
+    yeccpars2(State, '$end', [State1 | States], [Token0 | Vstack],
+              yecc_end(Line), [], {no_func, Line});
+yeccpars1(State1, State, States, Vstack, Token0, [], {no_func, Line}) ->
+    yeccpars2(State, '$end', [State1 | States], [Token0 | Vstack],
+              yecc_end(Line), [], {no_func, Line}).
+
+%% For internal use only.
+yecc_end({Line,_Column}) ->
+    {'$end', Line};
+yecc_end(Line) ->
+    {'$end', Line}.
+
+yecctoken_end_location(Token) ->
+    try erl_anno:end_location(element(2, Token)) of
+        undefined -> yecctoken_location(Token);
+        Loc -> Loc
+    catch _:_ -> yecctoken_location(Token)
+    end.
+
+-compile({nowarn_unused_function, yeccerror/1}).
+yeccerror(Token) ->
+    Text = yecctoken_to_string(Token),
+    Location = yecctoken_location(Token),
+    {error, {Location, ?MODULE, [\"syntax error before: \", Text]}}.
+
+-compile({nowarn_unused_function, yecctoken_to_string/1}).
+yecctoken_to_string(Token) ->
+    try erl_scan:text(Token) of
+        undefined -> yecctoken2string(Token);
+        Txt -> Txt
+    catch _:_ -> yecctoken2string(Token)
+    end.
+
+yecctoken_location(Token) ->
+    try erl_scan:location(Token)
+    catch _:_ -> element(2, Token)
+    end.
+
+-compile({nowarn_unused_function, yecctoken2string/1}).
+yecctoken2string({atom, _, A}) -> io_lib:write_atom(A);
+yecctoken2string({integer,_,N}) -> io_lib:write(N);
+yecctoken2string({float,_,F}) -> io_lib:write(F);
+yecctoken2string({char,_,C}) -> io_lib:write_char(C);
+yecctoken2string({var,_,V}) -> io_lib:format(\"~s\", [V]);
+yecctoken2string({string,_,S}) -> io_lib:write_string(S);
+yecctoken2string({reserved_symbol, _, A}) -> io_lib:write(A);
+yecctoken2string({_Cat, _, Val}) -> io_lib:format(\"~p\", [Val]);
+yecctoken2string({dot, _}) -> \"'.'\";
+yecctoken2string({'$end', _}) -> [];
+yecctoken2string({Other, _}) when is_atom(Other) ->
+    io_lib:write_atom(Other);
+yecctoken2string(Other) ->
+    io_lib:format(\"~p\", [Other]).
+">>.

@@ -3,7 +3,7 @@
 -behaviour(rebar_compiler).
 
 -export([context/1,
-         needed_files/3,
+         needed_files/4,
          dependencies/3,
          compile/4,
          clean/2]).
@@ -16,31 +16,33 @@ context(AppInfo) ->
       src_ext => ".yrl",
       out_mappings => Mappings}.
 
-needed_files(_, FoundFiles, AppInfo) ->
+needed_files(_, FoundFiles, Mappings, AppInfo) ->
     FirstFiles = [],
 
     %% Remove first files from found files
-    RestFiles = [Source || Source <- FoundFiles, not lists:member(Source, FirstFiles)],
+    RestFiles = [Source || Source <- FoundFiles,
+                           not lists:member(Source, FirstFiles),
+                           rebar_compiler:needs_compile(Source, ".erl", Mappings)],
 
     Opts = rebar_opts:get(rebar_app_info:opts(AppInfo), yrl_opts, []),
-    {{FirstFiles, Opts}, {RestFiles, Opts}}.
+    Opts1 = rebar_compiler_xrl:update_opts(Opts, AppInfo),
+
+    {{FirstFiles, Opts1}, {RestFiles, Opts1}}.
 
 dependencies(_, _, _) ->
     [].
 
 compile(Source, [{_, OutDir}], _, Opts) ->
-    BaseName = filename:basename(Source),
+    BaseName = filename:basename(Source, ".yrl"),
     Target = filename:join([OutDir, BaseName]),
-    AllOpts = [{parserfile, Target} | Opts],
-    AllOpts1 = [{includefile, filename:join(OutDir, I)} || {includefile, I} <- AllOpts,
-                                                           filename:pathtype(I) =:= relative],
-    case yecc:file(Source, AllOpts1 ++ [{return, true}]) of
+    AllOpts = [{parserfile, Target}, {return, true} | Opts],
+    case yecc:file(Source, AllOpts) of
         {ok, _} ->
             ok;
         {ok, _Mod, Ws} ->
             rebar_compiler:ok_tuple(Source, Ws);
         {error, Es, Ws} ->
-            rebar_compiler:error_tuple(Source, Es, Ws, AllOpts1)
+            rebar_compiler:error_tuple(Source, Es, Ws, AllOpts)
     end.
 
 clean(YrlFiles, _AppInfo) ->

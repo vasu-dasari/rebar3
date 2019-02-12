@@ -1,7 +1,7 @@
 %%% @doc Runs a process that holds a rebar3 state and can be used
 %%% to statefully maintain loaded project state into a running VM.
 -module(rebar_agent).
--export([start_link/1, do/1, do/2]).
+-export([start_link/1, do/1, do/2, async_do/1, async_do/2]).
 -export(['$handle_undefined_function'/2]).
 -export([init/1,
          handle_call/3, handle_cast/2, handle_info/2,
@@ -35,6 +35,18 @@ do(Namespace, Command) when is_atom(Namespace), is_atom(Command) ->
 do(Namespace, Args) when is_atom(Namespace), is_list(Args) ->
     gen_server:call(?MODULE, {cmd, Namespace, do, Args}, infinity).
 
+-spec async_do(atom()) -> ok | {error, term()}.
+async_do(Command) when is_atom(Command) ->
+    gen_server:cast(?MODULE, {cmd, Command});
+async_do(Args) when is_list(Args) ->
+    gen_server:cast(?MODULE, {cmd, default, do, Args}).
+
+-spec async_do(atom(), atom()) -> ok.
+async_do(Namespace, Command) when is_atom(Namespace), is_atom(Command) ->
+    gen_server:cast(?MODULE, {cmd, Namespace, Command});
+async_do(Namespace, Args) when is_atom(Namespace), is_list(Args) ->
+    gen_server:cast(?MODULE, {cmd, Namespace, do, Args}).
+
 '$handle_undefined_function'(Cmd, [Namespace, Args]) ->
     gen_server:call(?MODULE, {cmd, Namespace, Cmd, Args}, infinity);
 '$handle_undefined_function'(Cmd, [Args]) ->
@@ -54,20 +66,44 @@ init(State) ->
 %% @private
 handle_call({cmd, Command}, _From, State=#state{state=RState, cwd=Cwd}) ->
     MidState = maybe_show_warning(State),
+    put(cmd_type, sync),
     {Res, NewRState} = run(default, Command, "", RState, Cwd),
+    put(cmd_type, undefined),
     {reply, Res, MidState#state{state=NewRState}, hibernate};
 handle_call({cmd, Namespace, Command}, _From, State = #state{state=RState, cwd=Cwd}) ->
     MidState = maybe_show_warning(State),
+    put(cmd_type, sync),
     {Res, NewRState} = run(Namespace, Command, "", RState, Cwd),
+    put(cmd_type, undefined),
     {reply, Res, MidState#state{state=NewRState}, hibernate};
 handle_call({cmd, Namespace, Command, Args}, _From, State = #state{state=RState, cwd=Cwd}) ->
     MidState = maybe_show_warning(State),
+    put(cmd_type, sync),
     {Res, NewRState} = run(Namespace, Command, Args, RState, Cwd),
+    put(cmd_type, undefined),
     {reply, Res, MidState#state{state=NewRState}, hibernate};
 handle_call(_Call, _From, State) ->
     {noreply, State}.
 
 %% @private
+handle_cast({cmd, Command}, State=#state{state=RState, cwd=Cwd}) ->
+    MidState = maybe_show_warning(State),
+    put(cmd_type, async),
+    {_, NewRState} = run(default, Command, "", RState, Cwd),
+    put(cmd_type, undefined),
+    {noreply, MidState#state{state=NewRState}, hibernate};
+handle_cast({cmd, Namespace, Command}, State = #state{state=RState, cwd=Cwd}) ->
+    MidState = maybe_show_warning(State),
+    put(cmd_type, async),
+    {_, NewRState} = run(Namespace, Command, "", RState, Cwd),
+    put(cmd_type, undefined),
+    {noreply, MidState#state{state=NewRState}, hibernate};
+handle_cast({cmd, Namespace, Command, Args}, State = #state{state=RState, cwd=Cwd}) ->
+    MidState = maybe_show_warning(State),
+    put(cmd_type, async),
+    {_, NewRState} = run(Namespace, Command, Args, RState, Cwd),
+    put(cmd_type, undefined),
+    {noreply, MidState#state{state=NewRState}, hibernate};
 handle_cast(_Cast, State) ->
     {noreply, State}.
 
@@ -131,11 +167,14 @@ maybe_show_warning(State) ->
 %% that makes sense.
 -spec refresh_paths(rebar_state:t()) -> ok.
 refresh_paths(RState) ->
+    
     RefreshPaths = application:get_env(rebar, refresh_paths, [all_deps, test]),
     ToRefresh = parse_refresh_paths(RefreshPaths, RState, []),
     %% Modules from apps we can't reload without breaking functionality
+    ShellOpts = rebar_state:get(RState, shell, []),
+    ShellBlacklist = proplists:get_value(app_reload_blacklist, ShellOpts, []),
     Blacklist = lists:usort(
-        application:get_env(rebar, refresh_paths_blacklist, [])
+        application:get_env(rebar, refresh_paths_blacklist, ShellBlacklist)
         ++ [rebar, erlware_commons, providers, cf, cth_readable]),
     %% Similar to rebar_utils:update_code/1, but also forces a reload
     %% of used modules. Also forces to reload all of ebin/ instead

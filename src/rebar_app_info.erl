@@ -124,14 +124,14 @@ new(AppName) ->
                  {ok, t()}.
 new(AppName, Vsn) ->
     {ok, #app_info_t{name=rebar_utils:to_binary(AppName),
-                     original_vsn=rebar_utils:to_binary(Vsn)}}.
+                     original_vsn=Vsn}}.
 
 %% @doc build a complete version of the app info with all fields set.
 -spec new(atom() | binary() | string(), binary() | string(), file:name()) ->
                  {ok, t()}.
 new(AppName, Vsn, Dir) ->
     {ok, #app_info_t{name=rebar_utils:to_binary(AppName),
-                     original_vsn=rebar_utils:to_binary(Vsn),
+                     original_vsn=Vsn,
                      dir=rebar_utils:to_list(Dir),
                      out_dir=rebar_utils:to_list(Dir),
                      ebin_dir=filename:join(rebar_utils:to_list(Dir), "ebin")}}.
@@ -141,7 +141,7 @@ new(AppName, Vsn, Dir) ->
                  {ok, t()}.
 new(AppName, Vsn, Dir, Deps) ->
     {ok, #app_info_t{name=rebar_utils:to_binary(AppName),
-                     original_vsn=rebar_utils:to_binary(Vsn),
+                     original_vsn=Vsn,
                      dir=rebar_utils:to_list(Dir),
                      out_dir=rebar_utils:to_list(Dir),
                      ebin_dir=filename:join(rebar_utils:to_list(Dir), "ebin"),
@@ -153,7 +153,7 @@ new(AppName, Vsn, Dir, Deps) ->
 new(Parent, AppName, Vsn, Dir, Deps) ->
     {ok, #app_info_t{name=rebar_utils:to_binary(AppName),
                      parent=Parent,
-                     original_vsn=rebar_utils:to_binary(Vsn),
+                     original_vsn=Vsn,
                      dir=rebar_utils:to_list(Dir),
                      out_dir=rebar_utils:to_list(Dir),
                      ebin_dir=filename:join(rebar_utils:to_list(Dir), "ebin"),
@@ -343,9 +343,12 @@ app_file(AppInfo=#app_info_t{}, AppFile) ->
 app_details(AppInfo=#app_info_t{app_details=[]}) ->
     case app_file(AppInfo) of
         undefined ->
-            case rebar_config:consult_app_file(app_file_src(AppInfo)) of
+            try rebar_config:consult_app_file(app_file_src(AppInfo)) of
                 [] -> [];
                 [{application, _Name, AppDetails}] -> AppDetails
+            catch
+                _:_ ->
+                    []
             end;
         AppFile ->
             try rebar_file_utils:try_consult(AppFile) of
@@ -390,7 +393,7 @@ original_vsn(#app_info_t{original_vsn=Vsn}) ->
 %% asking for a semver)
 -spec original_vsn(t(), binary() | string()) -> t().
 original_vsn(AppInfo=#app_info_t{}, Vsn) ->
-    AppInfo#app_info_t{original_vsn=rebar_utils:to_binary(Vsn)}.
+    AppInfo#app_info_t{original_vsn=Vsn}.
 
 %% @doc returns the list of applications the app depends on.
 -spec applications(t()) -> list().

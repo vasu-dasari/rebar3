@@ -36,8 +36,7 @@ init(State) ->
 
 -spec do(rebar_state:t()) -> {ok, rebar_state:t()} | {error, string()}.
 do(State) ->
-    OldPath = code:get_path(),
-    code:add_pathsa(rebar_state:code_paths(State, all_deps)),
+    rebar_paths:set_paths([deps], State),
     XrefChecks = prepare(State),
     XrefIgnores = rebar_state:get(State, xref_ignores, []),
     %% Run xref checks
@@ -48,7 +47,6 @@ do(State) ->
     QueryChecks = rebar_state:get(State, xref_queries, []),
     QueryResults = lists:foldl(fun check_query/2, [], QueryChecks),
     stopped = xref:stop(xref),
-    rebar_utils:cleanup_code_path(OldPath),
     case XrefResults =:= [] andalso QueryResults =:= [] of
         true ->
             {ok, State};
@@ -162,7 +160,8 @@ get_xref_ignorelist(Mod, XrefCheck) ->
     %% And create a flat {M,F,A} list
     lists:foldl(
       fun({F, A}, Acc) -> [{Mod,F,A} | Acc];
-         ({M, F, A}, Acc) -> [{M,F,A} | Acc]
+         ({M, F, A}, Acc) -> [{M,F,A} | Acc];
+         (M, Acc) when is_atom(M) -> [M | Acc]
       end, [], lists:flatten([IgnoreXref, BehaviourCallbacks])).
 
 keyall(Key, List) ->
@@ -197,7 +196,8 @@ filter_xref_results(XrefCheck, XrefIgnores, XrefResults) ->
                             end, SearchModules),
 
     [Result || Result <- XrefResults,
-               not lists:member(parse_xref_result(Result), Ignores)].
+               not lists:member(element(1, Result), Ignores)
+               andalso not lists:member(parse_xref_result(Result), Ignores)].
 
 display_results(XrefResults, QueryResults) ->
     [lists:map(fun display_xref_results_for_type/1, XrefResults),
