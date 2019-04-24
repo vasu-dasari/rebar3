@@ -385,26 +385,33 @@ try_handle_app_file(AppInfo0, [File], AppDir, AppSrcFile, _, Validate) ->
                            [] ->
                                %% Set to undefined in case AppInfo previous had a .app.src
                                rebar_app_info:app_file_src(AppInfo1, undefined);
-                           Other when is_list(Other) ->
-                               throw({error, {multiple_app_files, Other}})
-                      end,
+                Other when is_list(Other) ->
+                    throw({error, {multiple_app_files, Other}})
+            end,
+            AppInfo3 = case filelib:is_file(filename:join(rebar_app_info:dir(AppInfo2), "mix.exs")) andalso
+                (filelib:is_file(filename:join(rebar_app_info:dir(AppInfo2), "rebar.config")) == false) of
+                true ->
+                    rebar_app_info:project_type(AppInfo2, mix);
+                _ ->
+                    AppInfo2
+            end,
             case Validate of
                 valid ->
-                    case rebar_app_utils:validate_application_info(AppInfo2) of
+                    case rebar_app_utils:validate_application_info(AppInfo3) of
                         true ->
-                            {true, AppInfo2};
+                            {true, AppInfo3};
                         _ ->
                             false
                     end;
                 invalid ->
-                    case rebar_app_utils:validate_application_info(AppInfo2) of
+                    case rebar_app_utils:validate_application_info(AppInfo3) of
                         true ->
                             false;
                         _ ->
-                            {true, AppInfo2}
+                            {true, AppInfo3}
                     end;
                 all ->
-                    {true, AppInfo2}
+                    {true, AppInfo3}
             end
     catch
         throw:{error, {Module, Reason}} ->
