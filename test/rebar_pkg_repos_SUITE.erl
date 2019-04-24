@@ -9,7 +9,7 @@
 
 all() ->
     [default_repo, repo_merging, repo_replacing,
-     auth_merging, organization_merging, {group, resolve_version}].
+     auth_merging, auth_config_errors, organization_merging, {group, resolve_version}].
 
 groups() ->
     [{resolve_version, [use_first_repo_match, use_exact_with_hash, fail_repo_update,
@@ -119,7 +119,8 @@ init_per_testcase(optional_prereleases, Config) ->
                 fun(_State) -> true end),
 
     [{state, State} | Config];
-init_per_testcase(auth_merging, Config) ->
+init_per_testcase(Case, Config) when Case =:= auth_merging ;
+                                     Case =:= auth_config_errors ->
     meck:new(file, [passthrough, no_link, unstick]),
     meck:new(rebar_packages, [passthrough, no_link]),
     Config;
@@ -131,6 +132,7 @@ init_per_testcase(_, Config) ->
     Config.
 
 end_per_testcase(Case, _Config) when Case =:= auth_merging ;
+                                     Case =:= auth_config_errors ;
                                      Case =:= organization_merging ->
     meck:unload(file),
     meck:unload(rebar_packages);
@@ -234,6 +236,41 @@ auth_merging(_Config) ->
 
     ok.
 
+auth_config_errors(_Config) ->
+    Repo1 = #{name => <<"repo-1">>,
+              api_url => <<"repo-1/api">>},
+    Repo2 = #{name => <<"repo-2">>,
+              repo_url => <<"repo-2/repo">>,
+              repo_verify => false},
+
+    State = rebar_state:new([{hex, [{repos, [Repo1, Repo2]}]}]),
+    meck:expect(file, consult,
+                fun(_) ->
+                        {error, {3,erl_parse,["syntax error before: ","'=>'"]}}
+                end),
+
+    ?assertThrow(rebar_abort, rebar_pkg_resource:init(pkg, State)),
+    meck:expect(file, consult,
+                fun(_) ->
+                        {error, enoent}
+                end),
+
+
+    {ok, #resource{state=#{ repos := [
+                                      UpdatedRepo1,
+                                      UpdatedRepo2,
+                                      DefaultRepo
+                                     ]}}} =  rebar_pkg_resource:init(pkg, State),
+
+    ?assertEqual(undefined, maps:get(write_key, UpdatedRepo1, undefined)),
+    ?assertEqual(undefined, maps:get(read_key, UpdatedRepo1, undefined)),
+    ?assertEqual(undefined, maps:get(repos_key, UpdatedRepo1, undefined)),
+    ?assertEqual(undefined, maps:get(write_key, UpdatedRepo2, undefined)),
+    ?assertEqual(undefined, maps:get(repos_key, UpdatedRepo2, undefined)),
+    ?assertEqual(undefined, maps:get(read_key, UpdatedRepo2, undefined)),
+    ?assertEqual(undefined, maps:get(write_key, DefaultRepo, undefined)),
+    ok.
+
 organization_merging(_Config) ->
     Repo1 = #{name => <<"hexpm:repo-1">>,
               api_url => <<"repo-1/api">>},
@@ -254,14 +291,23 @@ organization_merging(_Config) ->
     ?assertMatch({ok,
                   #resource{state=#{repos := [#{name := <<"hexpm:repo-1">>,
                                     parent := <<"hexpm">>,
+                                    repo_name := <<"repo-1">>,
+                                    api_repository := <<"repo-1">>,
+                                    repo_organization := <<"repo-1">>,
                                     read_key := <<"read key">>,
                                     write_key := <<"write key hexpm">>},
                                   #{name := <<"hexpm:repo-2">>,
                                     parent := <<"hexpm">>,
+                                    repo_name := <<"repo-2">>,
+                                    api_repository := <<"repo-2">>,
+                                    repo_organization := <<"repo-2">>,
                                     read_key := <<"read key 2">>,
                                     repos_key := <<"repos key 2">>,
                                     write_key := <<"write key 2">>},
                                   #{name := <<"hexpm">>,
+                                    repo_name := <<"hexpm">>,
+                                    api_repository := undefined,
+                                    repo_organization := undefined,
                                     write_key := <<"write key hexpm">>}]}}},
                  rebar_pkg_resource:init(pkg, State)),
 
